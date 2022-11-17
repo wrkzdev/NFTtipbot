@@ -2,6 +2,7 @@ import sys
 import traceback
 from datetime import datetime
 import os
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -13,7 +14,7 @@ import functools
 from typing import List
 
 from cogs.utils import Utils
-
+from cogs.alchemy_api import check_contract_alchemy
 
 class Admin(commands.Cog):
 
@@ -24,6 +25,75 @@ class Admin(commands.Cog):
     @staticmethod
     async def owner_only(interaction: discord.Interaction):
         return await interaction.client.is_owner(interaction.user)
+
+    @app_commands.check(owner_only)
+    @app_commands.command(
+        name='addopensea',
+        description="Add Contract by OpenSea or other to tokenBot"
+    )
+    async def slash_contract_addopensea(
+        self, interaction: discord.Interaction,
+        link: str
+    ) -> None:
+        """ /addopensea <link> """
+        await interaction.response.send_message(f"{interaction.user.mention} loading link...", ephemeral=True)
+        if interaction.user.id not in self.bot.config['discord']['owner_ids']:
+            await interaction.edit_original_response(content="Permission denied!!")
+            return
+        else:
+            try:
+                contract = None
+                token_id = None
+                if "https://opensea.io/assets/" in link:
+                    links = re.findall(r'(https?://\S+)', link)
+                    if len(links) < 1:
+                        return
+                    contract_token_id = links[0].rstrip('/').split("/")[-3:]
+                    if contract_token_id:
+                        timeout = 32
+                        network = contract_token_id[0]
+                        if network == "ethereum":
+                            chain = "eth"
+                            network = "ETHEREUM"
+                            url = "https://eth-mainnet.g.alchemy.com/nft/v2/"
+                        elif network == "polygon" or network == "matic":
+                            chain = network
+                            network = "POLYGON"
+                            url = "https://polygon-mainnet.g.alchemy.com/nft/v2/"
+                        else:
+                            await interaction.edit_original_response(content="Wrong network `{network}`")
+                            return
+                        contract = contract_token_id[1].lower()
+                        token_id = contract_token_id[2].split()[0]
+                        url += self.bot.config['api']['alchemy']+"/getContractMetadata?contractAddress="+contract
+
+                        check_cont = await check_contract_alchemy(url, contract)
+                        if check_cont is None:
+                            await interaction.edit_original_response(content="Contract may not be valid.")
+                            return
+                        elif check_cont and check_cont['contractMetadata']['tokenType'] not in ["ERC1155", "ERC721"]:
+                            await interaction.edit_original_response(content="Contract type is not ERC1155 nor ERC721!")
+                            return
+                        elif check_cont and check_cont['contractMetadata']['tokenType'] in ["ERC1155", "ERC721"]:
+                            if 'name' not in check_cont['contractMetadata']:
+                                await interaction.edit_original_response(content="Couldn't fetch name, please add manually.")
+                                return
+                            name = check_cont['contractMetadata']['name']
+                            # Check if exist
+                            get_cont = await self.utils.check_nft_cont(contract, network)
+                            if get_cont is not None:
+                                await interaction.edit_original_response(content="Contract `{}` already existed in DB!".format(contract))
+                            else:
+                                inserting = await self.utils.insert_new_nft_cont(contract, network, name)
+                                if inserting is True:
+                                    await interaction.edit_original_response(content="Successfully added contract `{}` / `{}` / `{}`".format(
+                                        contract, network, name
+                                    ))
+                else:
+                    await interaction.edit_original_response(content="Not supported yet with `{link}`")
+                    return
+            except Exception as e:
+                traceback.print_exc(file=sys.stdout)
 
     # Thanks to: https://github.com/middlerange/rarity-analyzer
     @app_commands.check(owner_only)
